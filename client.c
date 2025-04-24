@@ -46,6 +46,7 @@ int main(void)
     struct sockaddr_in sin_server;
     struct hostent* hent;
     char buf[BUFFER_SIZE];
+    char recv_buf[BUFFER_SIZE];
     char ciphertext[BUFFER_SIZE];
     char *str;
     size_t padded_len;
@@ -53,6 +54,7 @@ int main(void)
     unsigned char key[32];
     unsigned char iv[AES_BLOCK_SIZE];
     AES_KEY enc_key;
+    size_t recv_len;
             
     hexstr_to_bytes(key_string,key, sizeof(key));
     hexstr_to_bytes(iv_string, iv, sizeof(iv));
@@ -81,9 +83,16 @@ int main(void)
         if((sin_server.sin_addr.s_addr = inet_addr(SERVER_ADRESS)) == -1)
           exit_sys("inet_addr");  
 
-        if(connect(client_sock,(struct sockaddr*)&sin_server, sizeof(sin_server)) == -1)
-            exit_sys("coonect"); 
- 
+        if((connect(client_sock,(struct sockaddr*)&sin_server, sizeof(sin_server))) == -1)
+            exit_sys("connect"); 
+        
+        if ((recv_len = recv(client_sock, recv_buf, BUFFER_SIZE, 0)) == -1)
+	        exit_sys("recv");   
+        
+        recv_buf[recv_len] = '\0';
+        if(strcmp("HELLO", recv_buf) != 0)
+            goto EXIT;      
+
 
         for (;;) 
         {
@@ -102,6 +111,8 @@ int main(void)
             AES_cbc_encrypt(buf, ciphertext, padded_len, &enc_key, iv, AES_ENCRYPT);
 
             print_hex("Ciphertext", ciphertext, padded_len);                     
+            
+         
 
 		    if (send(client_sock, ciphertext, padded_len, MSG_NOSIGNAL) == -1)
 			    exit_sys("send");
@@ -112,6 +123,7 @@ int main(void)
 			    break;
 	    }
 
+EXIT:
 	shutdown(client_sock, SHUT_RDWR);
 	close(client_sock);
 

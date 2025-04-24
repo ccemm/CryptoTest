@@ -7,18 +7,33 @@
 #include <arpa/inet.h>
 #include <openssl/aes.h>
 #include <openssl/rand.h>
+#include <pthread.h>
+#include <stdatomic.h>
 
 #define SERVER_PORT 55555
 #define BUFFER_SIZE 4096
+#define MAX_CONNECTIONS 3
+
+const char* g_key_string = "f0edeccfa143a5b61e1998606f71b9710216ac7d8a1830b1236eed60e2747a43";
+const char* g_iv_string  = "edd98e3918bfab446883c42cce292e22";
+unsigned char g_key[32];
+unsigned char g_iv[AES_BLOCK_SIZE];
+AES_KEY g_dec_key;
 
 
-const char* key_string = "f0edeccfa143a5b61e1998606f71b9710216ac7d8a1830b1236eed60e2747a43";
-const char* iv_string  = "edd98e3918bfab446883c42cce292e22";
-
+void *client_thread_proc(void *param);
 void exit_sys(const char *msg);
 int hex_char_to_int(char c) ;
 int hexstr_to_bytes(const char *hexstr, unsigned char *out, size_t out_len);
 int unpad(unsigned char* buf, size_t size);
+int connectionNum = 0;
+
+
+typedef struct tagCLIENT_INFO {
+	int sock;
+	struct sockaddr_in sin;
+} CLIENT_INFO;
+
 
 
 int main(void)
@@ -26,17 +41,15 @@ int main(void)
     int server_sock, client_sock;
     struct sockaddr_in sin_server, sin_client;
     socklen_t sin_len;
-    char buf[BUFFER_SIZE+1];
-    char decrypted[BUFFER_SIZE+1];
-    ssize_t padded_len;
-    ssize_t actual_len;
-    unsigned char key[32];
-    unsigned char iv[AES_BLOCK_SIZE];
-    AES_KEY dec_key;
+	pthread_t tid;
+	CLIENT_INFO *ci;
+	int result;
+    
 
-    hexstr_to_bytes(key_string,key, sizeof(key));
-    hexstr_to_bytes(iv_string, iv, sizeof(iv));
-    AES_set_decrypt_key(key, 256, &dec_key);
+
+    hexstr_to_bytes(g_key_string,g_key, sizeof(g_key));
+    hexstr_to_bytes(g_iv_string, g_iv, sizeof(g_iv));
+    AES_set_decrypt_key(g_key, 256, &g_dec_key);
 
 
     if((server_sock= socket(AF_INET, SOCK_STREAM,0)) == -1)
@@ -57,22 +70,85 @@ int main(void)
     printf("waiting for connection\n");
     sin_len = sizeof(sin_client);
     
-    client_sock = accept(server_sock, (struct sockaddr*)&sin_client, &sin_len);
-    if( client_sock == -1 )
-    {
-        printf("%d \n", client_sock);
-        exit_sys("accept");
-    }
-    printf("connected client ===> %s:%d\n", inet_ntoa(sin_client.sin_addr), ntohs(sin_client.sin_port));
-
     for (;;) 
-    {
-		if ((padded_len = recv(client_sock, buf, BUFFER_SIZE, 0)) == -1)
+    {   
+        client_sock = accept(server_sock, (struct sockaddr*)&sin_client, &sin_len);
+        if( client_sock == -1 )
+        {
+            printf("%d \n", client_sock);
+            exit_sys("accept");            
+			//exit_sys("send");
+        }
+        
+
+        if(connectionNum == MAX_CONNECTIONS)
+        {  
+            printf("Server is busy rejecting connection request.\n");
+            
+            send(client_sock, "SERVER IS BUSY", 14, 0);
+            shutdown(client_sock, SHUT_RDWR);
+            close(client_sock);
+            continue;
+        }
+        send(client_sock, "HELLO", 5, 0);
+        connectionNum++;
+        printf("%d\n", connectionNum);
+        
+        printf("connected client ===> %s:%d\n", inet_ntoa(sin_client.sin_addr), ntohs(sin_client.sin_port));
+
+        if ((ci = (CLIENT_INFO *)malloc(sizeof(CLIENT_INFO))) == NULL) 
+        {
+			fprintf(stderr, "cannot allocate memory!...\n");
+			exit(EXIT_FAILURE);
+		}        
+         
+		ci->sock = client_sock;
+		ci->sin = sin_client;
+
+        if ((result = pthread_create(&tid, NULL, client_thread_proc, ci)) != 0) 
+        {
+			fprintf(stderr, "pthread_create: %s\n", strerror(result));
+			exit(EXIT_FAILURE);
+		}
+
+		if ((result = pthread_detach(tid)) != 0) 
+        {
+			fprintf(stderr, "pthread_detach: %s\n", strerror(result));
+			exit(EXIT_FAILURE);
+		}       
+	}    
+
+    shutdown(client_sock, SHUT_RDWR);
+    close(client_sock);
+
+    close(server_sock);  
+
+}
+
+void *client_thread_proc(void *param)
+{
+	char buf[BUFFER_SIZE+1];
+    char decrypted[BUFFER_SIZE+1];
+	char ntopbuf[INET_ADDRSTRLEN];
+	unsigned port;
+	ssize_t result;
+	CLIENT_INFO *ci = (CLIENT_INFO *)param;
+    ssize_t padded_len;
+    ssize_t actual_len;
+    unsigned char iv[16];
+
+	inet_ntop(AF_INET, &ci->sin.sin_addr, ntopbuf, INET_ADDRSTRLEN);
+	port = (unsigned)ntohs(ci->sin.sin_port);
+    memcpy(iv,g_iv, sizeof(iv));
+
+	for (;;) 
+    {           
+        if ((padded_len = recv(ci->sock, buf, BUFFER_SIZE, 0)) == -1)
 			exit_sys("recv");
 		if (padded_len == 0)
 			break;
         
-        AES_cbc_encrypt(buf, decrypted, padded_len, &dec_key, iv, AES_DECRYPT);
+        AES_cbc_encrypt(buf, decrypted, padded_len, &g_dec_key, iv, AES_DECRYPT);
         
         actual_len = unpad(decrypted,padded_len);
         if(-1 == actual_len)
@@ -82,15 +158,24 @@ int main(void)
 		if (!strcmp(decrypted, "quit"))
 			break;
 		printf("%ld byte(s) received: \"%s\"\n", actual_len, decrypted);
-	}    
+        
+		//if (send(ci->sock, buf, result, 0) == -1)
+			//exit_sys("send");
+	}
 
+	printf("client disconnected %s:%u\n", ntopbuf, port);
+    
+    atomic_fetch_sub(&connectionNum, 1);
+	
+    shutdown(ci->sock, SHUT_RDWR);
+	close(ci->sock);
 
-    shutdown(client_sock, SHUT_RDWR);
-    close(client_sock);
+	free(ci);
 
-    close(server_sock);  
-
+	return NULL;
 }
+
+
 
 int unpad(unsigned char* buf, size_t size)
 {
