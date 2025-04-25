@@ -15,6 +15,8 @@
 
 const char* key_string = "f0edeccfa143a5b61e1998606f71b9710216ac7d8a1830b1236eed60e2747a43";
 const char* iv_string  = "edd98e3918bfab446883c42cce292e22";
+unsigned char g_key[32];
+unsigned char g_iv[AES_BLOCK_SIZE];
 
 void exit_sys(const char *msg);
 int hex_char_to_int(char c) ;
@@ -40,6 +42,29 @@ void print_hex(const char *label, const unsigned char *data, int len)
     printf("\n");
 }
 
+int createPacket(char* buf, size_t buf_size, char* data, int data_len, AES_KEY* enc_key)
+{   
+    int padded_len = add_padding(data,data_len);
+    int len=0;
+    char ciphertext[BUFFER_SIZE];
+
+    if(padded_len > (buf_size-(AES_BLOCK_SIZE+sizeof(len)) ))
+    {
+        return -1;
+    }
+
+    len = padded_len + AES_BLOCK_SIZE;
+
+    memcpy(buf, &len, sizeof(len));
+    memcpy(buf+sizeof(len), g_iv, AES_BLOCK_SIZE);
+
+    AES_cbc_encrypt(data, ciphertext, padded_len, enc_key, g_iv, AES_ENCRYPT);
+
+    memcpy(buf+sizeof(len)+AES_BLOCK_SIZE, ciphertext, padded_len);
+
+    return (padded_len+AES_BLOCK_SIZE+sizeof(len));
+}
+
 int main(void)
 {
     int client_sock;
@@ -47,18 +72,16 @@ int main(void)
     struct hostent* hent;
     char buf[BUFFER_SIZE];
     char recv_buf[BUFFER_SIZE];
-    char ciphertext[BUFFER_SIZE];
+    char send_buf[BUFFER_SIZE];
     char *str;
-    size_t padded_len;
     int string_len;
-    unsigned char key[32];
-    unsigned char iv[AES_BLOCK_SIZE];
     AES_KEY enc_key;
     size_t recv_len;
+    int result;
             
-    hexstr_to_bytes(key_string,key, sizeof(key));
-    hexstr_to_bytes(iv_string, iv, sizeof(iv));
-    AES_set_encrypt_key(key, 256, &enc_key);
+    hexstr_to_bytes(key_string,g_key, sizeof(g_key));
+    hexstr_to_bytes(iv_string, g_iv, sizeof(g_iv));
+    AES_set_encrypt_key(g_key, 256, &enc_key);
     
 
     if((client_sock = socket(AF_INET, SOCK_STREAM, 0)) == -1)
@@ -105,18 +128,16 @@ int main(void)
 			    *str = '\0';
             
             string_len= strlen(buf);            
-
-            padded_len = add_padding(buf,string_len);
-
-            AES_cbc_encrypt(buf, ciphertext, padded_len, &enc_key, iv, AES_ENCRYPT);
-
-            print_hex("Ciphertext", ciphertext, padded_len);                     
             
-         
+            if( (result = createPacket(send_buf, BUFFER_SIZE, buf , string_len, &enc_key)) == -1)
+            {
+                printf("Too Long Data \n");
+                continue;
+            }
 
-		    if (send(client_sock, ciphertext, padded_len, MSG_NOSIGNAL) == -1)
-			    exit_sys("send");
-		   
+		    if (send(client_sock, send_buf, result, MSG_NOSIGNAL) == -1)
+			    exit_sys("send"); 
+
             buf[string_len] = '\0';
             printf("%s \n", buf);  
             if (!strcmp(buf, "quit"))

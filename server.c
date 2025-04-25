@@ -17,7 +17,6 @@
 const char* g_key_string = "f0edeccfa143a5b61e1998606f71b9710216ac7d8a1830b1236eed60e2747a43";
 const char* g_iv_string  = "edd98e3918bfab446883c42cce292e22";
 unsigned char g_key[32];
-unsigned char g_iv[AES_BLOCK_SIZE];
 AES_KEY g_dec_key;
 
 
@@ -45,10 +44,7 @@ int main(void)
 	CLIENT_INFO *ci;
 	int result;
     
-
-
     hexstr_to_bytes(g_key_string,g_key, sizeof(g_key));
-    hexstr_to_bytes(g_iv_string, g_iv, sizeof(g_iv));
     AES_set_decrypt_key(g_key, 256, &g_dec_key);
 
 
@@ -133,24 +129,30 @@ void *client_thread_proc(void *param)
 	unsigned port;
 	ssize_t result;
 	CLIENT_INFO *ci = (CLIENT_INFO *)param;
-    ssize_t padded_len;
+    int message_len;
     ssize_t actual_len;
     unsigned char iv[16];
 
 	inet_ntop(AF_INET, &ci->sin.sin_addr, ntopbuf, INET_ADDRSTRLEN);
 	port = (unsigned)ntohs(ci->sin.sin_port);
-    memcpy(iv,g_iv, sizeof(iv));
 
 	for (;;) 
-    {           
-        if ((padded_len = recv(ci->sock, buf, BUFFER_SIZE, 0)) == -1)
-			exit_sys("recv");
-		if (padded_len == 0)
-			break;
+    {   
+        if(recv_all(ci->sock, &message_len, sizeof(message_len) ) == -1)
+        {
+            break;   
+        }
+
+        if(recv_all(ci->sock, buf, message_len) == -1)
+        {
+            break;
+        }
+        memcpy(iv,buf, AES_BLOCK_SIZE);
         
-        AES_cbc_encrypt(buf, decrypted, padded_len, &g_dec_key, iv, AES_DECRYPT);
+        AES_cbc_encrypt(&buf[AES_BLOCK_SIZE], decrypted, message_len-AES_BLOCK_SIZE, &g_dec_key, iv, AES_DECRYPT);
         
-        actual_len = unpad(decrypted,padded_len);
+        actual_len = unpad(decrypted,message_len-AES_BLOCK_SIZE);
+        
         if(-1 == actual_len)
             exit_sys("unpad");		
 
@@ -159,7 +161,7 @@ void *client_thread_proc(void *param)
 			break;
 		printf("%ld byte(s) received: \"%s\"\n", actual_len, decrypted);
         
-		//if (send(ci->sock, buf, result, 0) == -1)
+		//if (send(ci->sock, buf, result, 0) 1== -1)
 			//exit_sys("send");
 	}
 
@@ -175,7 +177,18 @@ void *client_thread_proc(void *param)
 	return NULL;
 }
 
-
+int recv_all(int sock, void *buf, size_t len) 
+{
+    size_t total = 0;
+    while (total < len) 
+    {
+        ssize_t n = recv(sock, (char*)buf + total, len - total, 0);
+        if (n < 0) exit_sys("recv"); // error or disconnect
+        if (n == 0) return -1;
+        total += n;
+    }
+    return 0;
+}
 
 int unpad(unsigned char* buf, size_t size)
 {
