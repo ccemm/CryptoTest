@@ -16,8 +16,8 @@
 #define SERVER_PORT 55555
 #define BUFFER_SIZE 4096
 #define MAX_CONNECTIONS 3
-#define PUB_CER_PATH    "./ServerFs/sample_public.pem"
-#define PRV_CER_PATH    "./ServerFs/sample_private.pem"
+#define PUB_CER_PATH    "./ServerFs/server_cert.pem"
+#define PRV_CER_PATH    "./ServerFs/server_private.pem"
 
 enum Cmd{
     CMD_OK      = 0,
@@ -44,7 +44,7 @@ int hexstr_to_bytes(const char *hexstr, unsigned char *out, size_t out_len);
 int unpad(unsigned char* buf, size_t size);
 int recv_key(unsigned char* key,unsigned char* iv, const CLIENT_INFO* ci );
 int recv_all(int sock, void *buf, size_t len);
-int connectionNum = 0;
+int connection_num = 0;
 int create_packet(char* buf,const unsigned int buf_size,const msg* message, unsigned char *iv, const AES_KEY* enc_key);
 void print_hex(const char *label, const unsigned char *data, int len) ;
 int send_certificate(CLIENT_INFO* ci);
@@ -109,8 +109,7 @@ int main(void)
             continue;
         }
         send(client_sock, "HELLO", 5, MSG_NOSIGNAL);
-        connectionNum++;
-        printf("%d\n", connectionNum);
+        connection_num++;
         
         printf("connected client ===> %s:%d\n", inet_ntoa(sin_client.sin_addr), ntohs(sin_client.sin_port));
 
@@ -227,7 +226,7 @@ void *client_thread_proc(void *param)
 
 	printf("client disconnected %s:%u\n", ntopbuf, port);
     
-    atomic_fetch_sub(&connectionNum, 1);
+    atomic_fetch_sub(&connection_num, 1);
 	
     shutdown(ci->sock, SHUT_RDWR);
 	close(ci->sock);

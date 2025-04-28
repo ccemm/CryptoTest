@@ -11,6 +11,7 @@
 #include <openssl/rsa.h>
 #include <openssl/pem.h>
 #include <openssl/err.h>
+#include <openssl/x509.h>
 #include <fcntl.h>
 #include <errno.h>
 #include <libgen.h> 
@@ -18,8 +19,8 @@
 #define SERVER_ADRESS	"127.0.0.1"
 #define SERVER_PORT		55555
 #define BUFFER_SIZE		4096
-#define SVR_KEY_PATH    "./ClientFs/sample_public.pem"   
-
+#define SVR_KEY_PATH    "./ClientFs/server_cert.pem"   
+#define CA_CER_PATH    "./ClientFs/ca_cert.pem"
 
 enum Cmd{
     CMD_OK      = 0,
@@ -210,7 +211,7 @@ int recv_server_certificate(int client_sock)
     {
         return -1;
     }
-
+    
     for(;;)
     {
         if( (rcv_len = recv(client_sock, buf, 1024, 0)) == -1)
@@ -235,12 +236,160 @@ void create_key(unsigned char* key, unsigned char* iv )
     RAND_bytes(iv, AES_BLOCK_SIZE);
 }
 
+int verifyCertificateAndGetPublicKey(RSA **rsa )
+{
+    // load private key from PEM file
+    FILE *fp = fopen(SVR_KEY_PATH, "r");
+    X509 *server_cert;
+    X509 *ca_cert;
+    X509_NAME* subject;
+    X509_NAME* issuer;
+    ASN1_TIME *not_before;
+    ASN1_TIME *not_after;
+    EVP_PKEY* pkey;
+    X509_STORE *store;
+    X509_STORE_CTX *ctx;
+  
+    server_cert = PEM_read_X509(fp, NULL, NULL, NULL);
+
+    if (server_cert == NULL) 
+    {
+        fprintf(stderr, "Error reading certificate\n");
+        ERR_print_errors_fp(stderr);
+        return -1;
+    }
+    fclose(fp);
+
+    fp =  fopen(CA_CER_PATH, "r");
+
+    ca_cert = PEM_read_X509(fp, NULL, NULL, NULL);
+
+    if (ca_cert == NULL) 
+    {
+        fprintf(stderr, "Error reading certificate\n");
+        ERR_print_errors_fp(stderr);
+        return -1;
+    }
+
+
+    store = X509_STORE_new();
+
+    if (store == NULL) 
+    {
+        fprintf(stderr, "Unable to create X509 store\n");
+        X509_free(server_cert);
+        X509_free(ca_cert);
+        return 0;
+    }
+
+    if (X509_STORE_add_cert(store, ca_cert) != 1) 
+    {
+        printf("Failed to add CA certificate to store!\n");
+        return -1;
+    }
+
+    // Create the verification context
+    ctx = X509_STORE_CTX_new();
+    if (ctx == NULL) 
+    {
+        fprintf(stderr, "Unable to create X509_STORE_CTX\n");
+        X509_free(server_cert);
+        X509_free(ca_cert);
+        X509_STORE_free(store);
+        return -1;
+    }
+    
+    if (X509_STORE_CTX_init(ctx, store, server_cert, NULL) != 1) 
+    {
+        fprintf(stderr, "Unable to initialize the verification context\n");
+        X509_free(server_cert);
+        X509_free(ca_cert);
+        X509_STORE_CTX_free(ctx);
+        X509_STORE_free(store);
+        return -1;
+    }
+    
+
+;
+    if (X509_verify_cert(ctx) != 1) 
+    {
+        fprintf(stderr, "Certificate verification failed: %s\n", X509_verify_cert_error_string(X509_STORE_CTX_get_error(ctx)));
+        return -1;
+    } 
+    else 
+    {
+        printf("Certificate verification succeeded.\n");
+    }
+
+    // Add the CA certificate to the store
+    X509_STORE_add_cert(store, ca_cert);
+
+    subject = X509_get_subject_name(server_cert);
+    if (subject) 
+    {
+        printf("Subject:\n");
+        X509_NAME_print_ex_fp(stdout, subject, 0, XN_FLAG_RFC2253);
+        printf("\n");
+    }
+
+    // Extract issuer (who signed the cert)
+    issuer = X509_get_issuer_name(server_cert);
+    if (issuer) 
+    {
+        printf("Issuer:\n");
+        X509_NAME_print_ex_fp(stdout, issuer, 0, XN_FLAG_RFC2253);
+        printf("\n");
+    }
+
+    // Extract validity period
+    not_before = X509_get_notBefore(server_cert);
+    not_after = X509_get_notAfter(server_cert);
+    BIO *bio_out = BIO_new_fp(stdout, BIO_NOCLOSE);
+    printf("Validity:\n");
+    printf("  Not Before: ");
+    ASN1_TIME_print(bio_out, not_before);
+    printf("\n  Not After : ");
+    ASN1_TIME_print(bio_out, not_after);
+    printf("\n");
+
+    // Extract public key
+    pkey = X509_get_pubkey(server_cert);
+    if (pkey) 
+    {
+        //printf("Public Key Info:\n");
+        //EVP_PKEY_print_public_fp(stdout, pkey, 4, NULL);
+        //EVP_PKEY_free(pkey);
+    }
+    else
+    {
+        X509_free(server_cert);
+        X509_free(server_cert);
+        X509_free(ca_cert);
+        X509_STORE_CTX_free(ctx);
+        X509_STORE_free(store);
+        return -1;
+    }
+    // Extract the RSA structure from EVP_PKEY
+    *rsa = EVP_PKEY_get1_RSA(pkey);
+    if (!*rsa) 
+    {
+        fprintf(stderr, "Public key is not RSA type\n");
+        return -1;
+    } 
+    X509_free(server_cert);
+    X509_free(server_cert);
+    X509_free(ca_cert);
+    X509_STORE_CTX_free(ctx);
+    X509_STORE_free(store);
+
+
+    return 0;
+}
+
 int send_key(unsigned char* key, unsigned char* iv, int client_sock)
 {
     // Load or generate RSA keypair
     RSA *rsa = NULL;
-    // load private key from PEM file
-    FILE *fp = fopen(SVR_KEY_PATH, "r");
     unsigned int message_len = 0;
     int dec_len;
     char payload[32+ AES_BLOCK_SIZE];
@@ -249,18 +398,11 @@ int send_key(unsigned char* key, unsigned char* iv, int client_sock)
     int enc_len = 0;
     msg message;
 
-    if(fp == NULL)
+    if(verifyCertificateAndGetPublicKey(&rsa) == -1 )
     {
-        return -1;
+        //safe_delete_and_sync(SVR_KEY_PATH);
+        exit_sys("Certificate Verification Failed!!");
     }
-    
-    if(PEM_read_RSA_PUBKEY(fp, &rsa, NULL, NULL) == NULL )
-    {
-        ERR_print_errors_fp(stderr);
-        fclose(fp);
-        return -1;
-    }
-    fclose(fp);
 
     memcpy(payload, key, 32);
     memcpy((payload + 32), iv, AES_BLOCK_SIZE);
