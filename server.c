@@ -99,7 +99,7 @@ int main(void)
         }
         
 
-        if(connectionNum == MAX_CONNECTIONS)
+        if(connection_num == MAX_CONNECTIONS)
         {  
             printf("Server is busy rejecting connection request.\n");
             
