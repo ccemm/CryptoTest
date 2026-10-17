@@ -2,7 +2,9 @@
 CC ?= gcc
 
 # Compiler flags (warnings, debugging symbols)
-CFLAGS = -Wall -Wextra -g
+CFLAGS ?= -Wall -Wextra -g
+
+LDFLAGS ?= 
 
 # OpenSSL libraries required for the server
 LIBS = -lssl -lcrypto
@@ -12,11 +14,11 @@ all: server client
 
 # Build the server (requires OpenSSL flags)
 server: server.c
-	$(CC) $(CFLAGS) server.c -o server $(LIBS)
+	$(CC) $(CFLAGS) $(LDFLAGS) server.c -o server $(LIBS)
 
 # Build the client (add $(LIBS) here too if your client also uses OpenSSL)
 client: client.c
-	$(CC) $(CFLAGS) client.c -o client
+	$(CC) $(CFLAGS) $(LDFLAGS) client.c -o client $(LIBS)
 
 # Clean up built executables
 clean:
